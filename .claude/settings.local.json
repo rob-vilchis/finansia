@@ -6,7 +6,8 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(cd:*)",
-      "PowerShell(git push)"
+      "PowerShell(git push)",
+      "Bash(git add *)"
     ]
   }
 }

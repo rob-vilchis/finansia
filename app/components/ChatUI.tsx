@@ -5,6 +5,7 @@ import { UIMessage } from "ai";
 import { ArrowUp, Sparkles } from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type UseChatReturn = ReturnType<typeof useChat>;
 type SendMessage = UseChatReturn["sendMessage"];
@@ -97,8 +98,18 @@ export default function ChatUI({ messages, sendMessage }: ChatUIProps) {
                 >
                   {message.parts.map((part: MessagePart, index: number) =>
                     part.type === "text" ? (
-                      <div key={index} className="prose prose-sm prose-invert max-w-none prose-p:my-1.5 prose-headings:text-ink prose-strong:text-ink">
-                        <Markdown>{part.text}</Markdown>
+                      <div
+                        key={index}
+                        className="prose prose-sm prose-invert max-w-none
+                          prose-p:my-1.5 prose-headings:text-ink prose-headings:font-semibold
+                          prose-strong:text-ink prose-a:text-accent
+                          prose-table:my-2 prose-th:text-ink prose-th:font-medium
+                          prose-th:border-edge prose-td:border-edge prose-td:text-ink-muted
+                          prose-code:text-accent prose-code:bg-surface-strong prose-code:px-1
+                          prose-code:py-0.5 prose-code:rounded prose-code:before:content-none
+                          prose-code:after:content-none"
+                      >
+                        <Markdown remarkPlugins={[remarkGfm]}>{part.text}</Markdown>
                       </div>
                     ) : null,
                   )}
