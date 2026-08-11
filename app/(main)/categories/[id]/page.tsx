@@ -444,12 +444,19 @@ export default function CategoryPage(props: {
 
   const rawPct = hasBudget ? (monthlySpent / budget!) * 100 : 0;
   const clampedPct = Math.min(rawPct, 100);
-  const budgetStatus =
-    rawPct >= 100 ? "over" : rawPct >= 75 ? "warning" : "ok";
+  const budgetStatus = rawPct >= 100 ? "over" : rawPct >= 75 ? "warning" : "ok";
   const budgetAccent = {
-    over: { bar: "bg-expense", text: "text-expense", glow: "shadow-rose-500/10" },
+    over: {
+      bar: "bg-expense",
+      text: "text-expense",
+      glow: "shadow-rose-500/10",
+    },
     warning: { bar: "bg-warn", text: "text-warn", glow: "shadow-amber-500/10" },
-    ok: { bar: "bg-income", text: "text-income", glow: "shadow-emerald-500/10" },
+    ok: {
+      bar: "bg-income",
+      text: "text-income",
+      glow: "shadow-emerald-500/10",
+    },
   }[budgetStatus];
   const remaining = hasBudget ? budget! - monthlySpent : 0;
 
@@ -526,7 +533,7 @@ export default function CategoryPage(props: {
               <div className="flex items-center justify-between gap-2 mb-3">
                 <div className="flex items-center gap-1.5">
                   <Wallet className="w-3.5 h-3.5 text-ink-subtle" />
-                  <p className="text-[11px] font-medium text-ink-subtle uppercase tracking-wider">
+                  <p className="text-[12px] font-medium text-ink-subtle uppercase tracking-wider">
                     Presupuesto mensual
                   </p>
                 </div>
@@ -690,10 +697,7 @@ export default function CategoryPage(props: {
             title="Editar nombre"
             subtitle="Cambia el nombre de la categoría."
           >
-            <form
-              onSubmit={handleSubmit(onSubmitRename)}
-              className="space-y-4"
-            >
+            <form onSubmit={handleSubmit(onSubmitRename)} className="space-y-4">
               <div>
                 <FieldLabel>Nombre</FieldLabel>
                 <Controller
@@ -716,7 +720,11 @@ export default function CategoryPage(props: {
                 >
                   Cancelar
                 </GlassButton>
-                <GlassButton type="submit" variant="primary" disabled={isRenaming}>
+                <GlassButton
+                  type="submit"
+                  variant="primary"
+                  disabled={isRenaming}
+                >
                   {isRenaming ? "Guardando..." : "Guardar"}
                 </GlassButton>
               </div>
@@ -762,8 +770,8 @@ export default function CategoryPage(props: {
                         <span
                           className={`absolute top-0.5 w-5 h-5 rounded-full transition-transform ${
                             field.value
-                              ? "translate-x-4 bg-accent"
-                              : "translate-x-0.5 bg-ink-faint"
+                              ? "-translate-x-0.5  bg-accent"
+                              : "-translate-x-4.5  bg-ink-faint"
                           }`}
                         />
                       </button>
