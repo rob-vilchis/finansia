@@ -21,6 +21,9 @@ import {
   ReceiptText,
   Trash2,
   FolderPen,
+  Wallet,
+  Plus,
+  DollarSign,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -56,11 +59,24 @@ function formatMXN(amount: number, withCents = false) {
 
 const editSchema = z.object({
   name: z.string().min(1, "El nombre de la categoría es requerido"),
-  budget: z
-    .number({ invalid_type_error: "Ingresa un número válido" })
-    .positive("El presupuesto debe ser mayor a 0")
-    .nullish(),
 });
+
+const budgetSchema = z
+  .object({
+    budgeted: z.boolean(),
+    budget: z
+      .number({ invalid_type_error: "Ingresa un número válido" })
+      .nullish(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.budgeted && (val.budget == null || val.budget <= 0)) {
+      ctx.addIssue({
+        path: ["budget"],
+        code: z.ZodIssueCode.custom,
+        message: "El presupuesto debe ser mayor a 0",
+      });
+    }
+  });
 
 export default function CategoryPage(props: {
   params: Promise<{ id: string }>;
@@ -74,8 +90,10 @@ export default function CategoryPage(props: {
   const { showToast } = useToast();
   const [isRenaming, setIsRenaming] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSavingBudget, setIsSavingBudget] = useState(false);
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showBudgetDialog, setShowBudgetDialog] = useState(false);
 
   useEffect(() => {
     fetch("api/create-user");
@@ -90,7 +108,20 @@ export default function CategoryPage(props: {
     resolver: zodResolver(editSchema),
     defaultValues: {
       name: "",
-      budget: undefined as number | null | undefined,
+    },
+  });
+
+  const {
+    control: budgetControl,
+    handleSubmit: handleBudgetSubmit,
+    reset: resetBudget,
+    watch: watchBudget,
+    formState: { errors: budgetErrors },
+  } = useForm({
+    resolver: zodResolver(budgetSchema),
+    defaultValues: {
+      budgeted: false,
+      budget: null as number | null | undefined,
     },
   });
 
@@ -112,7 +143,6 @@ export default function CategoryPage(props: {
       setCategoryData(data);
       reset({
         name: data.category.name,
-        budget: data.category.budget ? Number(data.category.budget) : null,
       });
     } catch (err: unknown) {
       if (err instanceof Error) {
@@ -133,16 +163,29 @@ export default function CategoryPage(props: {
     setShowRenameDialog(true);
   };
 
+  const handleEditBudget = () => {
+    const current = categoryData?.category.budget
+      ? Number(categoryData.category.budget)
+      : null;
+    resetBudget({
+      budgeted: current !== null && current > 0,
+      budget: current,
+    });
+    setShowBudgetDialog(true);
+  };
+
   const handleDelete = () => {
     setShowDeleteDialog(true);
   };
 
-  const onSubmitRename = async (data: {
-    name: string;
-    budget?: number | null;
-  }) => {
+  const onSubmitRename = async (data: { name: string }) => {
     try {
       setIsRenaming(true);
+      // The PATCH route treats a missing budget as null, so carry the existing
+      // budget through to avoid wiping it on a name-only save.
+      const currentBudget = categoryData?.category.budget
+        ? Number(categoryData.category.budget)
+        : null;
       const response = await fetch(`/api/categories/${params.id}`, {
         method: "PATCH",
         headers: {
@@ -151,7 +194,7 @@ export default function CategoryPage(props: {
         body: JSON.stringify({
           name: data.name,
           type: categoryData?.category.type,
-          budget: data.budget ?? null,
+          budget: currentBudget,
         }),
       });
 
@@ -170,6 +213,42 @@ export default function CategoryPage(props: {
       });
     } finally {
       setIsRenaming(false);
+    }
+  };
+
+  const onSubmitBudget = async (data: {
+    budgeted: boolean;
+    budget?: number | null;
+  }) => {
+    try {
+      setIsSavingBudget(true);
+      const response = await fetch(`/api/categories/${params.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: categoryData?.category.name,
+          type: categoryData?.category.type,
+          budget: data.budgeted ? data.budget : null,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Error al actualizar el presupuesto");
+      }
+
+      setShowBudgetDialog(false);
+      fetchCategoryData(); // Refresh data
+    } catch (err: unknown) {
+      console.error(err);
+      showToast({
+        title: "No se pudo actualizar el presupuesto",
+        message: "Intenta de nuevo.",
+        variant: "error",
+      });
+    } finally {
+      setIsSavingBudget(false);
     }
   };
 
@@ -381,7 +460,7 @@ export default function CategoryPage(props: {
       : "text-ink";
 
   return (
-    <div className="min-h-screen bg-app font-(family-name:--font-outfit) w-full px-5 md:px-10 py-8">
+    <div className="min-h-screen bg-app font-(family-name:--font-outfit) w-full px-5 md:px-10 pt-8 pb-16">
       <div className="w-full max-w-4xl mx-auto animate-fadeIn">
         {/* Back Button */}
         <Link
@@ -406,7 +485,7 @@ export default function CategoryPage(props: {
                 </h1>
                 <button
                   onClick={handleRename}
-                  aria-label="Editar categoría"
+                  aria-label="Editar nombre"
                   className="shrink-0 p-2 text-ink-subtle hover:text-ink hover:bg-surface rounded-lg transition-colors cursor-pointer"
                 >
                   <Pencil className="w-4 h-4" />
@@ -444,6 +523,21 @@ export default function CategoryPage(props: {
           {/* Budget hero — only for expense categories with a budget */}
           {hasBudget && (
             <div className="mt-5 pt-5 border-t border-edge-soft">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-1.5">
+                  <Wallet className="w-3.5 h-3.5 text-ink-subtle" />
+                  <p className="text-[11px] font-medium text-ink-subtle uppercase tracking-wider">
+                    Presupuesto mensual
+                  </p>
+                </div>
+                <button
+                  onClick={handleEditBudget}
+                  aria-label="Editar presupuesto"
+                  className="shrink-0 p-1.5 text-ink-subtle hover:text-ink hover:bg-surface rounded-lg transition-colors cursor-pointer"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              </div>
               <div className="flex items-end justify-between gap-2 mb-2">
                 <div>
                   <p className="text-[11px] font-medium text-ink-subtle uppercase tracking-wider mb-1">
@@ -477,6 +571,26 @@ export default function CategoryPage(props: {
                   ? `Te quedan ${formatMXN(remaining)}`
                   : `Excedido por ${formatMXN(Math.abs(remaining))}`}
               </p>
+            </div>
+          )}
+
+          {/* No-budget CTA — expense categories without a budget */}
+          {isExpense && !hasBudget && (
+            <div className="mt-5 pt-5 border-t border-edge-soft flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2 min-w-0">
+                <Wallet className="w-4 h-4 text-ink-subtle shrink-0" />
+                <p className="text-sm text-ink-muted">
+                  Sin presupuesto mensual
+                </p>
+              </div>
+              <GlassButton
+                variant="secondary"
+                onClick={handleEditBudget}
+                className="flex items-center gap-2 shrink-0"
+              >
+                <Plus className="w-4 h-4" />
+                Definir presupuesto
+              </GlassButton>
             </div>
           )}
 
@@ -565,16 +679,16 @@ export default function CategoryPage(props: {
         </div>
       </div>
 
-      {/* Edit Dialog */}
+      {/* Edit Name Dialog */}
       <Dialog.Root open={showRenameDialog} onOpenChange={setShowRenameDialog}>
         <Dialog.Content maxWidth="420px" className={glassDialogContent}>
           <VisuallyHidden>
-            <Dialog.Title>Editar Categoría</Dialog.Title>
+            <Dialog.Title>Editar nombre</Dialog.Title>
           </VisuallyHidden>
           <GlassDialogShell
             icon={<FolderPen size={16} />}
-            title="Editar categoría"
-            subtitle="Actualiza el nombre y el presupuesto."
+            title="Editar nombre"
+            subtitle="Cambia el nombre de la categoría."
           >
             <form
               onSubmit={handleSubmit(onSubmitRename)}
@@ -594,32 +708,6 @@ export default function CategoryPage(props: {
                 />
                 <FieldError message={errors.name?.message} />
               </div>
-              {isExpense && (
-                <div>
-                  <FieldLabel>Presupuesto mensual (MXN)</FieldLabel>
-                  <Controller
-                    name="budget"
-                    control={control}
-                    render={({ field }) => (
-                      <GlassInput
-                        type="number"
-                        min="0"
-                        step="1"
-                        placeholder="Sin presupuesto"
-                        value={field.value ?? ""}
-                        onChange={(e) =>
-                          field.onChange(
-                            e.target.value === ""
-                              ? null
-                              : Number(e.target.value),
-                          )
-                        }
-                      />
-                    )}
-                  />
-                  <FieldError message={errors.budget?.message} />
-                </div>
-              )}
               <div className="flex justify-end gap-2 pt-4 border-t border-edge-soft mt-2">
                 <GlassButton
                   type="button"
@@ -630,6 +718,107 @@ export default function CategoryPage(props: {
                 </GlassButton>
                 <GlassButton type="submit" variant="primary" disabled={isRenaming}>
                   {isRenaming ? "Guardando..." : "Guardar"}
+                </GlassButton>
+              </div>
+            </form>
+          </GlassDialogShell>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      {/* Budget Dialog */}
+      <Dialog.Root open={showBudgetDialog} onOpenChange={setShowBudgetDialog}>
+        <Dialog.Content maxWidth="420px" className={glassDialogContent}>
+          <VisuallyHidden>
+            <Dialog.Title>Presupuesto mensual</Dialog.Title>
+          </VisuallyHidden>
+          <GlassDialogShell
+            icon={<Wallet size={16} />}
+            title="Presupuesto mensual"
+            subtitle="Define o desactiva el presupuesto de esta categoría."
+          >
+            <form
+              onSubmit={handleBudgetSubmit(onSubmitBudget)}
+              className="space-y-4"
+            >
+              <div>
+                <FieldLabel>Presupuesto mensual (MXN)</FieldLabel>
+                <div className="flex items-center gap-3">
+                  <Controller
+                    name="budgeted"
+                    control={budgetControl}
+                    render={({ field }) => (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={field.value}
+                        aria-label="Activar presupuesto"
+                        onClick={() => field.onChange(!field.value)}
+                        className={`relative w-10 h-6 rounded-full border transition-colors shrink-0 cursor-pointer ${
+                          field.value
+                            ? "bg-accent-soft border-accent-border"
+                            : "bg-surface border-edge"
+                        }`}
+                      >
+                        <span
+                          className={`absolute top-0.5 w-5 h-5 rounded-full transition-transform ${
+                            field.value
+                              ? "translate-x-4 bg-accent"
+                              : "translate-x-0.5 bg-ink-faint"
+                          }`}
+                        />
+                      </button>
+                    )}
+                  />
+                  <Controller
+                    name="budget"
+                    control={budgetControl}
+                    render={({ field }) => (
+                      <div
+                        className={`flex-1 transition-opacity ${
+                          watchBudget("budgeted") ? "" : "opacity-40"
+                        }`}
+                      >
+                        <GlassInput
+                          leadingIcon={<DollarSign size={16} />}
+                          type="number"
+                          min="0"
+                          step="1"
+                          placeholder="0"
+                          disabled={!watchBudget("budgeted")}
+                          className="font-mono tabular-nums"
+                          value={field.value ?? ""}
+                          onChange={(e) =>
+                            field.onChange(
+                              e.target.value === ""
+                                ? null
+                                : Number(e.target.value),
+                            )
+                          }
+                        />
+                      </div>
+                    )}
+                  />
+                </div>
+                <FieldError message={budgetErrors.budget?.message} />
+                <p className="text-xs text-ink-faint mt-2">
+                  Desactiva el interruptor para quitar el presupuesto de esta
+                  categoría.
+                </p>
+              </div>
+              <div className="flex justify-end gap-2 pt-4 border-t border-edge-soft mt-2">
+                <GlassButton
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setShowBudgetDialog(false)}
+                >
+                  Cancelar
+                </GlassButton>
+                <GlassButton
+                  type="submit"
+                  variant="primary"
+                  disabled={isSavingBudget}
+                >
+                  {isSavingBudget ? "Guardando..." : "Guardar"}
                 </GlassButton>
               </div>
             </form>
