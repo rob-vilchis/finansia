@@ -62,6 +62,22 @@ async function resolveCategoryId(
   return rows.length ? rows[0].id : null;
 }
 
+/**
+ * Snaps a date to the nearest Mexican "quincena" anchor: the 15th or the last
+ * day of the month. Days 1-15 snap to the 15th; days 16-end snap to the last
+ * day. Used so biweekly recurrences never drift off these two fixed days.
+ */
+export function snapToQuincena(currentDate: string): string {
+  const date = new Date(currentDate + "T00:00:00");
+  const lastDay = new Date(
+    date.getFullYear(),
+    date.getMonth() + 1,
+    0
+  ).getDate();
+  date.setDate(date.getDate() <= 15 ? 15 : lastDay);
+  return date.toISOString().split("T")[0];
+}
+
 export function calculateNextRunDate(
   currentDate: string,
   frequency: Frequency
@@ -75,9 +91,24 @@ export function calculateNextRunDate(
     case "weekly":
       date.setDate(date.getDate() + 7);
       break;
-    case "biweekly":
-      date.setDate(date.getDate() + 14);
+    case "biweekly": {
+      // Quincena: always the 15th and the last day of the month.
+      const day = date.getDate();
+      const lastDay = new Date(
+        date.getFullYear(),
+        date.getMonth() + 1,
+        0
+      ).getDate();
+      if (day < 15) {
+        date.setDate(15);
+      } else if (day < lastDay) {
+        date.setDate(lastDay);
+      } else {
+        // Last day of the month → 15th of next month.
+        date.setMonth(date.getMonth() + 1, 15);
+      }
       break;
+    }
     case "monthly":
       date.setMonth(date.getMonth() + 1);
       break;
@@ -141,7 +172,10 @@ export async function createRecurringTransaction(
       frequency: input.frequency,
       startDate: input.startDate,
       endDate: input.endDate ?? null,
-      nextRunDate: input.startDate,
+      nextRunDate:
+        input.frequency === "biweekly"
+          ? snapToQuincena(input.startDate)
+          : input.startDate,
       isActive: true,
     })
     .returning();
@@ -257,7 +291,7 @@ export async function updateRecurringTransaction(
     const today = new Date().toISOString().split("T")[0];
 
     // Find the next run date from start that's >= today
-    let next = start;
+    let next = freq === "biweekly" ? snapToQuincena(start) : start;
     while (next < today) {
       next = calculateNextRunDate(next, freq);
     }
