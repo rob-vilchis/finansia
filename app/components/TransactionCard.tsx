@@ -23,6 +23,8 @@ export default function TransactionCard({
       ? new Date(date).toLocaleDateString("es-MX", {
           day: "numeric",
           month: "short",
+          // Dates are stored as UTC-anchored wall clock — see DataDashboard.
+          timeZone: "UTC",
         })
       : null;
 

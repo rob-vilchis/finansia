@@ -5,7 +5,19 @@ import {
   insertTransactionSchema,
   transactions,
 } from "@/lib/db/schema/transactions";
-import { and, asc, between, count, desc, eq, like, inArray } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gte,
+  ilike,
+  inArray,
+  isNull,
+  lte,
+  or,
+} from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 type TransactionType = "income" | "expense" | "transfer";
@@ -30,18 +42,34 @@ export type SortBy = "date_desc" | "date_asc" | "amount_desc" | "amount_asc";
 
 export type GetTransactionsInput = {
   userId: string;
-  description?: string;
+  description?: string; // exact description, case-insensitive
+  search?: string; // free text; matches description, category or account names
   amount?: number | string;
   type?: TransactionType;
   startDatetime?: Date;
   endDatetime?: Date;
   categoryName?: string; // category by name (non-transfer)
-  accountName?: string; // alternative to accountId
-  targetAccountName?: string; // alternative to targetAccountId
+  accountName?: string; // source account by name
+  targetAccountName?: string; // target account by name
+  anyAccountName?: string; // matches either side of the transaction
   sortBy?: SortBy;
   limit?: number;
   offset?: number;
 };
+
+// Postgres LIKE/ILIKE treats % and _ as wildcards and \ as the escape char, so
+// user-typed text has to be escaped before being embedded in a pattern.
+function escapeLikePattern(value: string) {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+// `is_unverified` is nullable, and `= false` would silently drop NULL rows.
+function isVerified() {
+  return or(
+    eq(transactions.isUnverified, false),
+    isNull(transactions.isUnverified)
+  );
+}
 
 function normalizeDate(date: string | Date, time?: string): Date {
   const base = typeof date === "string" ? new Date(date) : date;
@@ -319,24 +347,50 @@ function buildFilterConditions(
     conditions.push(eq(transactions.userId, filters.userId));
   }
   if (filters.description) {
-    conditions.push(like(transactions.description, filters.description));
+    conditions.push(
+      ilike(transactions.description, escapeLikePattern(filters.description))
+    );
+  }
+  if (filters.search) {
+    const term = `%${escapeLikePattern(filters.search)}%`;
+    conditions.push(
+      or(
+        ilike(transactions.description, term),
+        ilike(categories.name, term),
+        ilike(sourceAccounts.name, term),
+        ilike(targetAccounts.name, term)
+      )
+    );
   }
   if (filters.categoryName) {
-    conditions.push(like(categories.name, filters.categoryName));
+    conditions.push(
+      ilike(categories.name, escapeLikePattern(filters.categoryName))
+    );
   }
   if (filters.type) {
     conditions.push(eq(transactions.type, filters.type));
   }
-  if (filters.startDatetime && filters.endDatetime) {
-    conditions.push(
-      between(transactions.date, filters.startDatetime, filters.endDatetime)
-    );
+  if (filters.startDatetime) {
+    conditions.push(gte(transactions.date, filters.startDatetime));
+  }
+  if (filters.endDatetime) {
+    conditions.push(lte(transactions.date, filters.endDatetime));
   }
   if (filters.targetAccountName) {
-    conditions.push(like(targetAccounts.name, filters.targetAccountName));
+    conditions.push(
+      ilike(targetAccounts.name, escapeLikePattern(filters.targetAccountName))
+    );
   }
   if (filters.accountName) {
-    conditions.push(like(sourceAccounts.name, filters.accountName));
+    conditions.push(
+      ilike(sourceAccounts.name, escapeLikePattern(filters.accountName))
+    );
+  }
+  if (filters.anyAccountName) {
+    const name = escapeLikePattern(filters.anyAccountName);
+    conditions.push(
+      or(ilike(sourceAccounts.name, name), ilike(targetAccounts.name, name))
+    );
   }
   return conditions;
 }
@@ -384,7 +438,7 @@ export async function getTransactions(filters: GetTransactionsInput) {
       targetAccounts,
       eq(transactions.targetAccountId, targetAccounts.id)
     )
-    .where(and(eq(transactions.isUnverified, false), ...conditions))
+    .where(and(isVerified(), ...conditions))
     .orderBy(getSortOrder(filters.sortBy))
     .$dynamic();
 
@@ -416,7 +470,7 @@ export async function countTransactions(filters: GetTransactionsInput): Promise<
       targetAccounts,
       eq(transactions.targetAccountId, targetAccounts.id)
     )
-    .where(and(eq(transactions.isUnverified, false), ...conditions));
+    .where(and(isVerified(), ...conditions));
 
   return result[0]?.value ?? 0;
 }

@@ -42,6 +42,8 @@ export default function ReviewPageClient({
           weekday: "long",
           month: "long",
           day: "numeric",
+          // Imported dates are UTC-anchored wall clock — see DataDashboard.
+          timeZone: "UTC",
         });
 
         dayKey = dayKey.charAt(0).toUpperCase() + dayKey.slice(1);

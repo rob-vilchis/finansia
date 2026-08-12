@@ -1,8 +1,8 @@
 "use client";
 
-import { Search, X, Calendar, SlidersHorizontal } from "lucide-react";
+import { Search, X, Calendar, SlidersHorizontal, Loader2 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { GlassSelect } from "@/app/components/ui/glass";
 
 interface Category {
@@ -22,7 +22,7 @@ export interface ActiveFilters {
   account?: string;
   startDate?: string;
   endDate?: string;
-  description?: string;
+  q?: string;
   sort?: string;
 }
 
@@ -32,6 +32,19 @@ const TYPE_OPTIONS = [
   { value: "income", label: "Ingresos" },
   { value: "transfer", label: "Transferencias" },
 ];
+
+const SEARCH_DEBOUNCE_MS = 350;
+
+export function hasAnyFilter(filters: ActiveFilters) {
+  return Boolean(
+    filters.type ||
+      filters.category ||
+      filters.account ||
+      filters.startDate ||
+      filters.endDate ||
+      filters.q
+  );
+}
 
 export default function TransactionFilters({
   categories,
@@ -44,10 +57,15 @@ export default function TransactionFilters({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [isPending, startTransition] = useTransition();
 
-  const [descriptionInput, setDescriptionInput] = useState(
-    activeFilters.description || ""
-  );
+  const appliedSearch = activeFilters.q || "";
+  const [searchInput, setSearchInput] = useState(appliedSearch);
+  // Last search term this component sent to the URL. Used to tell our own
+  // navigations apart from external ones (back/forward, "Limpiar filtros"),
+  // so an in-flight debounce never overwrites what the user is typing.
+  const lastAppliedSearch = useRef(appliedSearch);
+
   const [showFilters, setShowFilters] = useState(
     !!(
       activeFilters.category ||
@@ -58,7 +76,7 @@ export default function TransactionFilters({
   );
 
   const updateFilter = useCallback(
-    (key: string, value: string | null) => {
+    (key: string, value: string | null, options?: { replace?: boolean }) => {
       const params = new URLSearchParams(searchParams.toString());
       if (value === null || value === "" || value === "all") {
         params.delete(key);
@@ -66,26 +84,59 @@ export default function TransactionFilters({
         params.set(key, value);
       }
       params.delete("page");
-      router.push(`?${params.toString()}`);
+      const url = `?${params.toString()}`;
+      startTransition(() => {
+        if (options?.replace) router.replace(url);
+        else router.push(url);
+      });
     },
     [searchParams, router]
   );
+
+  const applySearch = useCallback(
+    (value: string) => {
+      lastAppliedSearch.current = value;
+      // Replace rather than push: typing shouldn't fill up the history stack.
+      updateFilter("q", value, { replace: true });
+    },
+    [updateFilter]
+  );
+
+  // Adopt search terms that changed outside this input.
+  useEffect(() => {
+    if (appliedSearch !== lastAppliedSearch.current) {
+      lastAppliedSearch.current = appliedSearch;
+      setSearchInput(appliedSearch);
+    }
+  }, [appliedSearch]);
+
+  // Debounced search — results update as the user types.
+  useEffect(() => {
+    const next = searchInput.trim();
+    if (next === appliedSearch) return;
+    const timeout = setTimeout(() => applySearch(next), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timeout);
+  }, [searchInput, appliedSearch, applySearch]);
 
   const clearAllFilters = useCallback(() => {
     const params = new URLSearchParams();
     const tab = searchParams.get("tab");
     if (tab) params.set("tab", tab);
-    router.push(`?${params.toString()}`);
-    setDescriptionInput("");
+    lastAppliedSearch.current = "";
+    setSearchInput("");
+    startTransition(() => router.push(`?${params.toString()}`));
   }, [searchParams, router]);
 
-  const hasActiveFilters =
-    activeFilters.type ||
-    activeFilters.category ||
-    activeFilters.account ||
-    activeFilters.startDate ||
-    activeFilters.endDate ||
-    activeFilters.description;
+  const hasActiveFilters = hasAnyFilter(activeFilters);
+
+  // Filters that live in the collapsible panel, badged on the toggle so they
+  // aren't invisible while the panel is closed.
+  const advancedFilterCount = [
+    activeFilters.category,
+    activeFilters.account,
+    activeFilters.startDate,
+    activeFilters.endDate,
+  ].filter(Boolean).length;
 
   const filteredCategories = activeFilters.type
     ? categories.filter((cat) => cat.type === activeFilters.type)
@@ -99,12 +150,14 @@ export default function TransactionFilters({
           <button
             key={value}
             onClick={() => {
+              // Categories are type-scoped, so a category filter can't survive
+              // a switch to a different type.
               if (value !== "all" && activeFilters.category) {
                 const params = new URLSearchParams(searchParams.toString());
                 params.delete("category");
                 params.delete("page");
                 params.set("type", value);
-                router.push(`?${params.toString()}`);
+                startTransition(() => router.push(`?${params.toString()}`));
               } else {
                 updateFilter("type", value);
               }
@@ -122,26 +175,51 @@ export default function TransactionFilters({
 
       {/* Row 2 — Search + sort + controls */}
       <div className="flex items-center gap-2">
-        {/* Description search — always visible */}
+        {/* Free-text search — always visible */}
         <div className="relative flex-1 min-w-0">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
+          {isPending ? (
+            <Loader2
+              size={13}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint animate-spin pointer-events-none"
+            />
+          ) : (
+            <Search
+              size={13}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none"
+            />
+          )}
           <input
-            type="text"
-            placeholder="Buscar..."
-            value={descriptionInput}
-            onChange={(e) => setDescriptionInput(e.target.value)}
+            type="search"
+            inputMode="search"
+            aria-label="Buscar transacciones"
+            placeholder="Buscar descripción, categoría o cuenta..."
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") updateFilter("description", descriptionInput);
-            }}
-            onBlur={() => {
-              if (descriptionInput !== (activeFilters.description || "")) {
-                updateFilter("description", descriptionInput);
+              if (e.key === "Enter") {
+                e.preventDefault();
+                applySearch(searchInput.trim());
+              } else if (e.key === "Escape" && searchInput) {
+                e.preventDefault();
+                setSearchInput("");
               }
             }}
-            className="w-full h-9 bg-surface border border-edge rounded-lg pl-8 pr-3
+            className="w-full h-9 bg-surface border border-edge rounded-lg pl-8 pr-8
               text-sm text-ink-muted placeholder:text-ink-faint
-              focus:outline-none focus:border-accent-border hover:border-edge-strong transition-all"
+              focus:outline-none focus:border-accent-border hover:border-edge-strong transition-all
+              [&::-webkit-search-cancel-button]:appearance-none"
           />
+          {searchInput && (
+            <button
+              type="button"
+              aria-label="Limpiar búsqueda"
+              onClick={() => setSearchInput("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded
+                text-ink-faint hover:text-ink-muted transition-colors cursor-pointer"
+            >
+              <X size={13} />
+            </button>
+          )}
         </div>
 
         {/* Sort */}
@@ -161,6 +239,8 @@ export default function TransactionFilters({
         {hasActiveFilters && (
           <button
             onClick={clearAllFilters}
+            title="Limpiar filtros"
+            aria-label="Limpiar filtros"
             className="shrink-0 flex items-center gap-1 px-2.5 py-2 text-xs text-ink-faint hover:text-ink-muted transition-colors cursor-pointer"
           >
             <X size={13} />
@@ -170,6 +250,7 @@ export default function TransactionFilters({
         {/* Filters toggle */}
         <button
           onClick={() => setShowFilters(!showFilters)}
+          aria-expanded={showFilters}
           className={`shrink-0 flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border transition-all cursor-pointer ${
             showFilters
               ? "bg-surface-strong border-edge-strong text-ink-muted"
@@ -178,6 +259,11 @@ export default function TransactionFilters({
         >
           <SlidersHorizontal size={13} />
           Filtros
+          {advancedFilterCount > 0 && (
+            <span className="ml-0.5 min-w-4 px-1 rounded-full bg-accent-soft border border-accent-border text-accent text-[10px] leading-4 tabular-nums">
+              {advancedFilterCount}
+            </span>
+          )}
         </button>
       </div>
 
@@ -223,6 +309,12 @@ export default function TransactionFilters({
                   <input
                     type="date"
                     value={activeFilters[field] || ""}
+                    max={
+                      field === "startDate" ? activeFilters.endDate : undefined
+                    }
+                    min={
+                      field === "endDate" ? activeFilters.startDate : undefined
+                    }
                     onChange={(e) => updateFilter(field, e.target.value)}
                     className="w-full h-9 pl-8 pr-2 bg-surface border border-edge rounded-lg
                       text-sm text-ink-muted focus:outline-none focus:border-accent-border
