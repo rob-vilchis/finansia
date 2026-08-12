@@ -23,6 +23,7 @@ import NewTransactionDialog from "@/app/components/NewTransactionDialog";
 import TransactionCard from "@/app/components/TransactionCard";
 import TransactionDialog from "@/app/components/TransactionDialog";
 import TransactionFilters, {
+  hasAnyFilter,
   type ActiveFilters,
 } from "@/app/components/TransactionFilters";
 import UploadStatementDialog from "@/app/components/UploadStatementDialog";
@@ -159,22 +160,18 @@ export default function DataDashboard({
         });
       }
     }
-  }, [processingStatement]);
+  }, [processingStatement, router, showToast]);
 
   useEffect(() => {
-    if (pendingStatements.length === 0) {
-      fetchPendingStatements();
-      return;
-    }
+    // Keep polling while a statement is queued *or* while an upload we just
+    // triggered hasn't shown up yet — otherwise a freshly uploaded statement
+    // never refreshes the page on its own.
+    if (pendingStatements.length === 0 && !processingStatement) return;
     const intervalId = setInterval(() => {
       fetchPendingStatements();
     }, 3000);
     return () => clearInterval(intervalId);
-  }, [
-    pendingStatements.length,
-    fetchPendingStatements,
-    setStatementDialogOpen,
-  ]);
+  }, [pendingStatements.length, processingStatement, fetchPendingStatements]);
 
   useEffect(() => {
     fetch("api/create-user");
@@ -187,10 +184,14 @@ export default function DataDashboard({
   const groupTransactionsByDay = (transactions: Transaction[]) => {
     return transactions.reduce((groups, transaction) => {
       const date = new Date(transaction.date);
+      // Dates are stored as the wall-clock date the user (or the statement
+      // parser) entered, anchored to UTC. Formatting in the browser's timezone
+      // would push anything before 06:00 into the previous day.
       let dayKey = date.toLocaleDateString("es-MX", {
         weekday: "long",
         month: "long",
         day: "numeric",
+        timeZone: "UTC",
       });
       dayKey = dayKey.charAt(0).toUpperCase() + dayKey.slice(1);
       if (!groups[dayKey]) groups[dayKey] = [];
@@ -306,12 +307,7 @@ export default function DataDashboard({
 
               <div className="grid gap-4 mx-auto">
                 {transactions.length === 0 ? (
-                  activeFilters.type ||
-                  activeFilters.category ||
-                  activeFilters.account ||
-                  activeFilters.startDate ||
-                  activeFilters.endDate ||
-                  activeFilters.description ? (
+                  hasAnyFilter(activeFilters) ? (
                     <EmptyState
                       icon={<SearchX size={24} />}
                       title="Sin resultados"

@@ -24,7 +24,8 @@ type SearchParams = {
   account?: string;
   startDate?: string;
   endDate?: string;
-  description?: string;
+  q?: string;
+  description?: string; // legacy name for `q`, kept so old links keep working
   sort?: string;
   page?: string;
 };
@@ -32,6 +33,24 @@ type SearchParams = {
 const PAGE_SIZE = 20;
 
 const VALID_SORT_VALUES: SortBy[] = ["date_desc", "date_asc", "amount_desc", "amount_asc"];
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Transaction dates are stored as the wall-clock time the user entered,
+ * anchored to UTC, so the range boundaries have to be built in UTC too —
+ * relying on the server's local timezone shifts the range by a whole day
+ * whenever that timezone isn't UTC.
+ */
+function parseDayBoundary(value: string | undefined, edge: "start" | "end") {
+  if (!value || !DATE_ONLY.test(value)) return undefined;
+  const [year, month, day] = value.split("-").map(Number);
+  const timestamp =
+    edge === "start"
+      ? Date.UTC(year, month - 1, day, 0, 0, 0, 0)
+      : Date.UTC(year, month - 1, day, 23, 59, 59, 999);
+  return Number.isNaN(timestamp) ? undefined : new Date(timestamp);
+}
 
 function parseSearchParams(params: SearchParams, userId: string) {
   const page = Math.max(1, parseInt(params.page || "1", 10) || 1);
@@ -52,35 +71,21 @@ function parseSearchParams(params: SearchParams, userId: string) {
   if (params.category) {
     filters.categoryName = params.category;
   }
+  // A transaction belongs to an account whether it is the source (expense,
+  // transfer out) or the target (income, transfer in), so match either side.
   if (params.account) {
-    filters.accountName = params.account;
-  }
-  if (params.description) {
-    const escaped = params.description.replace(/[%_]/g, "\\$&");
-    filters.description = `%${escaped}%`;
-  }
-  if (params.startDate && params.endDate) {
-    const start = new Date(params.startDate);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(params.endDate);
-    end.setHours(23, 59, 59, 999);
-    filters.startDatetime = start;
-    filters.endDatetime = end;
-  } else if (params.startDate) {
-    const start = new Date(params.startDate);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date("2099-12-31");
-    filters.startDatetime = start;
-    filters.endDatetime = end;
-  } else if (params.endDate) {
-    const start = new Date("2000-01-01");
-    const end = new Date(params.endDate);
-    end.setHours(23, 59, 59, 999);
-    filters.startDatetime = start;
-    filters.endDatetime = end;
+    filters.anyAccountName = params.account;
   }
 
-  return { filters, page };
+  const search = (params.q ?? params.description ?? "").trim();
+  if (search) {
+    filters.search = search;
+  }
+
+  filters.startDatetime = parseDayBoundary(params.startDate, "start");
+  filters.endDatetime = parseDayBoundary(params.endDate, "end");
+
+  return { filters, page, search };
 }
 
 async function getAccounts(userId: string) {
@@ -171,7 +176,7 @@ export default async function Page({
   }
 
   const params = await searchParams;
-  const { filters, page } = parseSearchParams(params, user.id);
+  const { filters, page, search } = parseSearchParams(params, user.id);
 
   const [
     txns,
@@ -210,7 +215,7 @@ export default async function Page({
         account: params.account,
         startDate: params.startDate,
         endDate: params.endDate,
-        description: params.description,
+        q: search,
         sort: params.sort || "date_desc",
       }}
     />
