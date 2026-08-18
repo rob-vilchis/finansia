@@ -1,11 +1,13 @@
 "use client";
 
 import TransactionCard from "@/app/components/TransactionCard";
+import TransactionDialog from "@/app/components/TransactionDialog";
 import { useToast } from "@/app/components/GenericToast";
 import { EmptyState, ErrorState } from "@/app/components/ui/states";
 import {
   GlassButton,
   GlassInput,
+  GlassSelect,
   GlassDialogShell,
   glassDialogContent,
   FieldLabel,
@@ -24,6 +26,7 @@ import {
   Wallet,
   Plus,
   DollarSign,
+  Merge,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -94,6 +97,15 @@ export default function CategoryPage(props: {
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showBudgetDialog, setShowBudgetDialog] = useState(false);
+  const [showMergeDialog, setShowMergeDialog] = useState(false);
+  const [isMerging, setIsMerging] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState("");
+  const [mergeCandidates, setMergeCandidates] = useState<Category[] | null>(
+    null,
+  );
+  const [transactionDialogOpen, setTransactionDialogOpen] = useState(false);
+  const [selectedTransaction, setSelectedTransaction] =
+    useState<Transaction | null>(null);
 
   useEffect(() => {
     fetch("api/create-user");
@@ -172,6 +184,70 @@ export default function CategoryPage(props: {
       budget: current,
     });
     setShowBudgetDialog(true);
+  };
+
+  const handleMerge = async () => {
+    setMergeTargetId("");
+    setMergeCandidates(null);
+    setShowMergeDialog(true);
+
+    try {
+      const response = await fetch("/api/categories");
+      if (!response.ok) throw new Error("Error al cargar las categorías");
+      const data: Category[] = await response.json();
+      // Only categories of the same type can absorb these transactions.
+      setMergeCandidates(
+        data.filter(
+          (c) => c.id !== params.id && c.type === categoryData?.category.type,
+        ),
+      );
+    } catch (err: unknown) {
+      console.error(err);
+      setMergeCandidates([]);
+      showToast({
+        title: "No se pudieron cargar las categorías",
+        message: "Intenta de nuevo.",
+        variant: "error",
+      });
+    }
+  };
+
+  const confirmMerge = async () => {
+    if (!mergeTargetId) return;
+    try {
+      setIsMerging(true);
+      const response = await fetch(`/api/categories/${params.id}/merge`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ targetCategoryId: mergeTargetId }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error ?? "Error al fusionar la categoría");
+      }
+
+      setShowMergeDialog(false);
+      showToast({
+        title: "Categorías fusionadas",
+        message: `${result.movedTransactions} ${
+          result.movedTransactions === 1 ? "transacción se movió" : "transacciones se movieron"
+        } a ${result.targetCategory.name}.`,
+        variant: "info",
+      });
+      router.push(`/categories/${mergeTargetId}`);
+    } catch (err: unknown) {
+      console.error(err);
+      showToast({
+        title: "No se pudo fusionar la categoría",
+        message: err instanceof Error ? err.message : "Intenta de nuevo.",
+        variant: "error",
+      });
+    } finally {
+      setIsMerging(false);
+    }
   };
 
   const handleDelete = () => {
@@ -517,14 +593,24 @@ export default function CategoryPage(props: {
             </div>
 
             {/* Action Buttons */}
-            <GlassButton
-              variant="danger"
-              onClick={handleDelete}
-              className="flex items-center gap-2 shrink-0"
-            >
-              <Trash2 className="w-4 h-4" />
-              <span className="hidden sm:inline">Eliminar</span>
-            </GlassButton>
+            <div className="flex items-center gap-2 shrink-0">
+              <GlassButton
+                variant="secondary"
+                onClick={handleMerge}
+                className="flex items-center gap-2"
+              >
+                <Merge className="w-4 h-4" />
+                <span className="hidden sm:inline">Fusionar</span>
+              </GlassButton>
+              <GlassButton
+                variant="danger"
+                onClick={handleDelete}
+                className="flex items-center gap-2"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span className="hidden sm:inline">Eliminar</span>
+              </GlassButton>
+            </div>
           </div>
 
           {/* Budget hero — only for expense categories with a budget */}
@@ -659,18 +745,25 @@ export default function CategoryPage(props: {
                   </div>
                   <div className="space-y-2">
                     {monthTransactions.map((transaction) => (
-                      <TransactionCard
+                      <div
                         key={transaction.id}
-                        description={transaction.description}
-                        date={transaction.date}
-                        amount={transaction.amount}
-                        showCategory={false}
-                        showDate
-                        categoryName={transaction.categoryName}
-                        type={transaction.type}
-                        sourceAccountName={transaction.sourceAccountName}
-                        targetAccountName={transaction.targetAccountName}
-                      />
+                        onClick={() => {
+                          setSelectedTransaction(transaction);
+                          setTransactionDialogOpen(true);
+                        }}
+                      >
+                        <TransactionCard
+                          description={transaction.description}
+                          date={transaction.date}
+                          amount={transaction.amount}
+                          showCategory={false}
+                          showDate
+                          categoryName={transaction.categoryName}
+                          type={transaction.type}
+                          sourceAccountName={transaction.sourceAccountName}
+                          targetAccountName={transaction.targetAccountName}
+                        />
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -879,6 +972,89 @@ export default function CategoryPage(props: {
           </GlassDialogShell>
         </Dialog.Content>
       </Dialog.Root>
+
+      {/* Merge Category Dialog */}
+      <Dialog.Root open={showMergeDialog} onOpenChange={setShowMergeDialog}>
+        <Dialog.Content maxWidth="420px" className={glassDialogContent}>
+          <VisuallyHidden>
+            <Dialog.Title>Fusionar categoría</Dialog.Title>
+          </VisuallyHidden>
+          <GlassDialogShell
+            icon={<Merge size={16} />}
+            title="Fusionar categoría"
+            subtitle={`Mueve las transacciones de ${category.name} a otra categoría.`}
+          >
+            <div className="space-y-4">
+              <div>
+                <FieldLabel>Categoría destino</FieldLabel>
+                <GlassSelect
+                  value={mergeTargetId}
+                  onChange={(e) => setMergeTargetId(e.target.value)}
+                  disabled={mergeCandidates === null || isMerging}
+                >
+                  <option value="">
+                    {mergeCandidates === null
+                      ? "Cargando categorías..."
+                      : "Selecciona una categoría"}
+                  </option>
+                  {(mergeCandidates ?? []).map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </GlassSelect>
+                {mergeCandidates !== null && mergeCandidates.length === 0 && (
+                  <FieldError message="No hay otras categorías del mismo tipo para fusionar." />
+                )}
+              </div>
+
+              <p className="text-xs text-ink-subtle">
+                {summary.transactionCount}{" "}
+                {summary.transactionCount === 1
+                  ? "transacción se moverá"
+                  : "transacciones se moverán"}{" "}
+                a la categoría destino y <strong>{category.name}</strong> se
+                eliminará. Esta acción no se puede deshacer.
+              </p>
+
+              <div className="flex justify-end gap-2 pt-4 border-t border-edge-soft mt-2">
+                <GlassButton
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setShowMergeDialog(false)}
+                  disabled={isMerging}
+                >
+                  Cancelar
+                </GlassButton>
+                <GlassButton
+                  variant="primary"
+                  disabled={!mergeTargetId || isMerging}
+                  onClick={confirmMerge}
+                >
+                  {isMerging ? "Fusionando..." : "Fusionar"}
+                </GlassButton>
+              </div>
+            </div>
+          </GlassDialogShell>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      {/* Edit Transaction Dialog */}
+      {selectedTransaction && (
+        <TransactionDialog
+          open={transactionDialogOpen}
+          onOpenChange={setTransactionDialogOpen}
+          transaction={selectedTransaction}
+          onUpdate={() => {
+            setTransactionDialogOpen(false);
+            fetchCategoryData();
+          }}
+          onDelete={() => {
+            setTransactionDialogOpen(false);
+            fetchCategoryData();
+          }}
+        />
+      )}
     </div>
   );
 }
