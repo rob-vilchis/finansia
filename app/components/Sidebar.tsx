@@ -1,7 +1,7 @@
 "use client";
 
 import { UserButton } from "@clerk/nextjs";
-import { Home, CircleDollarSign, AppWindow, Repeat } from "lucide-react";
+import { Home, CircleDollarSign, AppWindow, Repeat, Send } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -11,6 +11,7 @@ export const navLinks = [
   { href: "/data", label: "Datos", icon: CircleDollarSign },
   { href: "/recurring", label: "Recurrentes", icon: Repeat },
   { href: "/categories", label: "Categorías", icon: AppWindow },
+  { href: "/telegram", label: "Telegram", icon: Send },
   /*  { href: "/analysis", label: "Análisis", icon: BarChart3 }, */
 ];
 

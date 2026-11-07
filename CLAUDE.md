@@ -14,13 +14,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run db:generate` — Generate Drizzle migrations
 - `npm run db:push` — Push schema to database (no migration files)
 - `npm run db:migrate` — Run migrations
+- `npm run telegram:setup -- <https-url>` — Register the Telegram webhook + bot commands
 
 ## Tech Stack
 
 - **Framework**: Next.js 15 (App Router, React 19)
 - **Auth**: Clerk (`@clerk/nextjs`)
 - **Database**: PostgreSQL via Neon (`@neondatabase/serverless`), ORM is Drizzle
-- **AI**: Vercel AI SDK v5 (`ai` package) with OpenAI (GPT-5 for chat) and Anthropic (Claude Sonnet for sta tement parsing)
+- **AI**: Vercel AI SDK v5 (`ai` package) via AI Gateway — Claude Sonnet for chat, the Telegram bot and statement parsing; GPT-5 for tips
 - **UI**: Tailwind CSS v4, Radix UI Themes, MUI (date pickers), Recharts, Vaul (drawers), Lucide icons
 - **Forms**: react-hook-form + zod + @hookform/resolvers
 - **Styling**: `clsx` + `tailwind-merge` via `lib/utils.ts`
@@ -36,6 +37,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `/categories` — Category management
 - `/categories/[id]` — Category detail
 - `/analysis` — Spending analysis with charts
+- `/telegram` — Connect/disconnect the Telegram bot
 
 ### API Routes (`app/api/`)
 
@@ -71,14 +73,22 @@ Business logic layer between API routes and database:
 - `TransactionsContext` — Provides `refreshTransactions()` trigger (counter-based) for re-fetching after mutations
 - `ChatContext` — Wraps Vercel AI SDK's `useChat`, provides shared chat state across the app; auto-refreshes transactions on tool calls
 
-### AI Chat System (`app/api/chat/route.ts`)
+### AI Chat System (`lib/ai/financeAssistant.ts`)
 
-The chat endpoint uses Vercel AI SDK `streamText` with tool-calling. Tools:
+`buildFinanceAssistant(userId, { extraInstructions })` returns the system prompt and the full tool set scoped to one user. It is shared by the web chat (`app/api/chat/route.ts`, `streamText`) and the Telegram bot (`generateText`), so **add or change tools there, not in a route**. Tools include:
 - `createTransaction` — Creates transactions with zod validation (category-type cross-validation via `superRefine`)
 - `retrieveTransactions` — Query transactions by any combination of filters
 - `deleteTransactions` — Delete matching transactions
 
 Tool input schemas dynamically build `z.enum()` arrays from the user's actual categories and accounts.
+
+### Telegram Bot (`lib/telegram/`, `app/api/telegram/webhook/route.ts`)
+
+- Webhook is public in `middleware.ts` and authenticated by the `X-Telegram-Bot-Api-Secret-Token` header (`TELEGRAM_WEBHOOK_SECRET`). It returns 200 immediately and processes the update in `waitUntil` so Telegram never re-delivers (which would duplicate transactions).
+- Linking: `/telegram` page → `createTelegramLinkAction` creates a 15-min one-time code → deep link `t.me/<bot>?start=<code>` → bot consumes it (`lib/services/telegram.ts`). One chat per user.
+- Memory: each exchange (user message + `response.messages`, including tool calls/results) is one `telegram_turns` row; the last 10 turns from the past 12h are replayed. Images/PDFs are passed to the model but stored only as a text placeholder.
+- Replies: model Markdown → Telegram HTML (`lib/telegram/format.ts`), chunked under 4096 chars, plain-text fallback on 400.
+- Commands: `/start`, `/ayuda`, `/nuevo`, `/desvincular`. Voice notes are not supported yet.
 
 ### Statement Processing (`app/api/upload-statement/route.ts`)
 

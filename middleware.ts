@@ -3,6 +3,7 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 const isPublicRoute = createRouteMatcher([
   "/",
   "/api/cron",
+  "/api/telegram/webhook", // authenticated by Telegram's secret token header
   "/sign-in(.*)",
   "/sign-up(.*)",
 ]);

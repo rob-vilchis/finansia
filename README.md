@@ -16,6 +16,7 @@
 - **Transacciones recurrentes** — Administra ingresos y gastos que se repiten.
 - **Análisis de gastos** — Gráficas y desgloses de en qué se va el dinero.
 - **Consejos financieros con IA** — Consejos personalizados generados de forma programada.
+- **Bot de Telegram** — Registra gastos con un mensaje o la foto de un ticket, con las mismas capacidades que el chat de la app.
 
 ## Stack Tecnológico
 
@@ -69,6 +70,12 @@ CRON_SECRET=...
 
 # Sentry (opcional)
 SENTRY_AUTH_TOKEN=...
+
+# Bot de Telegram (opcional)
+TELEGRAM_BOT_TOKEN=123456:ABC...       # de @BotFather
+TELEGRAM_WEBHOOK_SECRET=...            # openssl rand -hex 32
+TELEGRAM_BOT_USERNAME=finansia_bot     # opcional, evita una llamada a getMe
+NEXT_PUBLIC_APP_URL=https://tu-app.vercel.app
 ```
 
 ### 3. Configurar la base de datos
@@ -85,6 +92,16 @@ npm run dev
 
 Abre [http://localhost:3000](http://localhost:3000).
 
+### 5. Bot de Telegram (opcional)
+
+1. Crea un bot con [@BotFather](https://t.me/BotFather) (`/newbot`) y copia el token.
+2. Configura las variables `TELEGRAM_*` de arriba (en `.env` y en Vercel).
+3. Aplica la migración (`npm run db:migrate`) para crear las tablas `telegram_*`.
+4. Despliega y registra el webhook: `npm run telegram:setup -- https://tu-app.vercel.app`
+5. En la app, ve a **Telegram** en el menú y toca **Conectar**.
+
+El webhook necesita una URL HTTPS pública; para probar en local usa un túnel (por ejemplo `cloudflared tunnel --url http://localhost:3000`) y vuelve a correr `telegram:setup` con esa URL.
+
 ## Scripts
 
 | Comando | Descripción |
@@ -96,6 +113,7 @@ Abre [http://localhost:3000](http://localhost:3000).
 | `npm run db:generate` | Genera archivos de migración de Drizzle |
 | `npm run db:push` | Aplica el esquema a la base de datos (sin archivos de migración) |
 | `npm run db:migrate` | Ejecuta las migraciones |
+| `npm run telegram:setup -- <url>` | Registra el webhook y los comandos del bot de Telegram |
 
 ## Estructura del Proyecto
 
