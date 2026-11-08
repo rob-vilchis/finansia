@@ -10,7 +10,8 @@
     "postinstall": "patch-package",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "telegram:setup": "tsx scripts/setupTelegram.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.10",
