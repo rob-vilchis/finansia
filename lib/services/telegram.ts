@@ -6,9 +6,32 @@ import {
 } from "@/lib/db/schema/telegram";
 import { and, desc, eq, gt, lt, or } from "drizzle-orm";
 import type { ModelMessage } from "ai";
-import { randomBytes } from "crypto";
+import { randomInt } from "crypto";
 
 const LINK_CODE_TTL_MS = 15 * 60 * 1000;
+
+// No 0/O or 1/I so the code is easy to read and type. 32^8 ≈ 1.1e12 options.
+const LINK_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const LINK_CODE_LENGTH = 8;
+const LINK_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{8}$/;
+
+/**
+ * Extracts a link code from whatever the user sent: "/start K7M2Q9XF",
+ * "k7m2-q9xf", " K7M2 Q9XF ". Returns null if it doesn't look like a code.
+ */
+export function normalizeLinkCode(input: string): string | null {
+  const candidate = input
+    .trim()
+    .replace(/^\/start(@\w+)?/i, "")
+    .replace(/[\s-]/g, "")
+    .toUpperCase();
+  return LINK_CODE_PATTERN.test(candidate) ? candidate : null;
+}
+
+/** "K7M2Q9XF" → "K7M2-Q9XF" for display. */
+export function formatLinkCode(code: string): string {
+  return `${code.slice(0, 4)}-${code.slice(4)}`;
+}
 
 /** Creates a one-time code for the `/start <code>` deep link. */
 export async function createLinkCode(userId: string) {
@@ -22,8 +45,12 @@ export async function createLinkCode(userId: string) {
       ),
     );
 
-  // base64url is valid for Telegram start params ([A-Za-z0-9_-], ≤ 64 chars).
-  const code = randomBytes(18).toString("base64url");
+  // Short and typeable: used both as the deep-link start param and as a code
+  // the user can send to the bot by hand if their client drops the param.
+  const code = Array.from(
+    { length: LINK_CODE_LENGTH },
+    () => LINK_CODE_ALPHABET[randomInt(LINK_CODE_ALPHABET.length)],
+  ).join("");
   const expiresAt = new Date(Date.now() + LINK_CODE_TTL_MS);
   await db.insert(telegramLinkCodes).values({ code, userId, expiresAt });
   return { code, expiresAt };

@@ -3,6 +3,7 @@
 import { getBotUsername } from "@/lib/telegram/api";
 import {
   createLinkCode,
+  formatLinkCode,
   getLinkByUserId,
   unlinkUser,
 } from "@/lib/services/telegram";
@@ -53,6 +54,7 @@ export async function createTelegramLinkAction() {
       data: {
         url: `https://t.me/${botUsername}?start=${code}`,
         code,
+        displayCode: formatLinkCode(code),
         botUsername,
         expiresAt: expiresAt.toISOString(),
       },

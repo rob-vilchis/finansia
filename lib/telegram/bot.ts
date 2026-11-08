@@ -7,6 +7,7 @@ import {
   consumeLinkCode,
   getConversationHistory,
   getLinkByChatId,
+  normalizeLinkCode,
   saveConversationTurn,
   unlinkUser,
 } from "@/lib/services/telegram";
@@ -63,7 +64,7 @@ function notLinkedText(): string {
   return [
     "👋 Hola, soy el asistente de <b>Finansia</b>.",
     "",
-    "Para empezar, conecta tu cuenta: abre Finansia, ve a <b>Telegram</b> en el menú y toca <b>Conectar</b>.",
+    "Para conectar tu cuenta abre Finansia → <b>Telegram</b> → <b>Conectar</b> y envíame aquí el código de 8 caracteres que aparece (por ejemplo <code>K7M2-Q9XF</code>).",
     url ? `\n${url}/telegram` : "",
   ].join("\n");
 }
@@ -139,37 +140,49 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
   const text = (message.text ?? message.caption ?? "").trim();
   const command = parseCommand(message.text ?? "");
 
-  // /start <code> — link this chat to a Finansia account.
+  const existingLink = await getLinkByChatId(chatKey);
+
+  // Linking. Accept "/start <code>" (deep link) from anyone, and a bare code
+  // ("K7M2-Q9XF") from chats that aren't linked yet — some Telegram clients
+  // open the deep link but send a plain "/start" without the code.
+  const startArg = command?.command === "start" ? command.arg : "";
+  const linkCode = startArg
+    ? normalizeLinkCode(startArg)
+    : !existingLink && !command
+      ? normalizeLinkCode(text)
+      : null;
+
   if (command?.command === "start") {
-    if (command.arg) {
-      const userId = await consumeLinkCode(
-        command.arg,
-        chatKey,
-        message.from?.username,
-      );
-      if (!userId) {
-        await sendHtml(
-          chatId,
-          "Ese enlace ya expiró o no es válido. Genera uno nuevo desde Finansia → <b>Telegram</b>.",
-        );
-        return;
-      }
+    console.info("[telegram] /start", {
+      hasPayload: Boolean(startArg),
+      linked: Boolean(existingLink),
+    });
+  }
+
+  if (startArg || linkCode) {
+    const userId = linkCode
+      ? await consumeLinkCode(linkCode, chatKey, message.from?.username)
+      : null;
+    if (!userId) {
       await sendHtml(
         chatId,
-        `✅ <b>¡Listo! Tu cuenta de Finansia está conectada.</b>\n\nCuéntame tus gastos como se lo dirías a un amigo y yo los registro.\n\n${HELP_TEXT}`,
+        "Ese código ya expiró o no es válido. Genera uno nuevo desde Finansia → <b>Telegram</b> y envíamelo.",
       );
       return;
     }
-    const existing = await getLinkByChatId(chatKey);
-    await sendHtml(chatId, existing ? HELP_TEXT : notLinkedText());
+    await sendHtml(
+      chatId,
+      `✅ <b>¡Listo! Tu cuenta de Finansia está conectada.</b>\n\nCuéntame tus gastos como se lo dirías a un amigo y yo los registro.\n\n${HELP_TEXT}`,
+    );
     return;
   }
 
-  const link = await getLinkByChatId(chatKey);
-  if (!link) {
-    await sendHtml(chatId, notLinkedText());
+  if (command?.command === "start" || !existingLink) {
+    await sendHtml(chatId, existingLink ? HELP_TEXT : notLinkedText());
     return;
   }
+
+  const link = existingLink;
 
   if (command) {
     switch (command.command) {

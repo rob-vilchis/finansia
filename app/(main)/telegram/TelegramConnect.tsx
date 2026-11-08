@@ -27,6 +27,7 @@ interface LinkInfo {
 interface PendingLink {
   url: string;
   code: string;
+  displayCode: string;
   botUsername: string;
   expiresAt: string;
 }
@@ -89,13 +90,10 @@ export default function TelegramConnect({
   }, [pending, showToast, stopPolling]);
 
   const handleConnect = async () => {
-    // Open the tab synchronously so mobile browsers don't block the popup.
-    const tab = window.open("", "_blank");
     setBusy(true);
     const result = await createTelegramLinkAction();
     setBusy(false);
     if (!result.success || !result.data) {
-      tab?.close();
       showToast({
         title: "No se pudo conectar",
         message: result.message,
@@ -104,8 +102,6 @@ export default function TelegramConnect({
       return;
     }
     setPending(result.data);
-    if (tab) tab.location.href = result.data.url;
-    else window.location.href = result.data.url;
   };
 
   const handleUnlink = async () => {
@@ -120,14 +116,22 @@ export default function TelegramConnect({
     });
   };
 
-  const copyStartCommand = async () => {
+  const copyCode = async () => {
     if (!pending) return;
-    await navigator.clipboard.writeText(`/start ${pending.code}`);
-    showToast({
-      title: "Copiado",
-      message: `Pégalo en el chat con @${pending.botUsername}`,
-      variant: "info",
-    });
+    try {
+      await navigator.clipboard.writeText(pending.code);
+      showToast({
+        title: "Código copiado",
+        message: `Pégalo en el chat con @${pending.botUsername}`,
+        variant: "info",
+      });
+    } catch {
+      showToast({
+        title: "No se pudo copiar",
+        message: `Escribe ${pending.displayCode} en el chat con @${pending.botUsername}`,
+        variant: "warning",
+      });
+    }
   };
 
   return (
@@ -176,33 +180,59 @@ export default function TelegramConnect({
               </GlassButton>
             </div>
           ) : pending ? (
-            <div className="space-y-4">
+            <div className="space-y-5">
               <div className="flex items-center gap-3">
                 <div className="h-2 w-2 rounded-full bg-accent animate-pulse" />
-                <p className="text-sm text-ink">
-                  Esperando a que toques <b>Iniciar</b> en Telegram…
-                </p>
+                <p className="text-sm text-ink">Esperando la conexión…</p>
               </div>
-              <p className="text-xs text-ink-subtle">
-                ¿No se abrió Telegram? Abre el enlace o busca a{" "}
-                <span className="text-ink-muted">@{pending.botUsername}</span> y
-                envíale el comando. El enlace expira en 15 minutos.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <a href={pending.url} target="_blank" rel="noreferrer">
-                  <GlassButton className="flex items-center gap-2">
-                    <ExternalLink size={14} />
-                    Abrir Telegram
-                  </GlassButton>
-                </a>
-                <GlassButton
-                  variant="secondary"
-                  onClick={copyStartCommand}
-                  className="flex items-center gap-2"
-                >
-                  <Copy size={14} />
-                  Copiar comando
-                </GlassButton>
+
+              <ol className="space-y-4 text-sm text-ink-muted">
+                <li className="flex gap-3">
+                  <span className="text-accent-fg font-semibold">1.</span>
+                  <div className="space-y-2">
+                    <p>
+                      Abre el chat con{" "}
+                      <span className="text-ink">@{pending.botUsername}</span>{" "}
+                      y toca <b className="text-ink">Iniciar</b>.
+                    </p>
+                    <a
+                      href={pending.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-accent-soft border border-accent-border text-accent-fg hover:bg-accent/30"
+                    >
+                      <ExternalLink size={14} />
+                      Abrir Telegram
+                    </a>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <span className="text-accent-fg font-semibold">2.</span>
+                  <div className="space-y-2 w-full">
+                    <p>
+                      Si el bot no te confirma la conexión, envíale este código:
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <code className="px-4 py-2 rounded-lg bg-surface-strong border border-edge-strong text-xl font-semibold tracking-[0.2em] text-ink select-all">
+                        {pending.displayCode}
+                      </code>
+                      <GlassButton
+                        variant="secondary"
+                        onClick={copyCode}
+                        className="flex items-center gap-2"
+                      >
+                        <Copy size={14} />
+                        Copiar
+                      </GlassButton>
+                    </div>
+                  </div>
+                </li>
+              </ol>
+
+              <div className="flex items-center justify-between gap-3 pt-3 border-t border-edge-soft">
+                <p className="text-xs text-ink-faint">
+                  El código expira en 15 minutos.
+                </p>
                 <GlassButton
                   variant="ghost"
                   onClick={() => {
