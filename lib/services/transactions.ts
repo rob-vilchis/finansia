@@ -239,7 +239,7 @@ export async function createTransactionIfUnique({
 
   if (existingTransaction.length) {
     console.log("Transaction already exists, skipping");
-    return existingTransaction[0];
+    return { transaction: existingTransaction[0], created: false };
   }
 
   const resolvedCategoryId = await resolveCategoryId(
@@ -298,7 +298,7 @@ export async function createTransactionIfUnique({
     })
     .returning();
 
-  return inserted[0];
+  return { transaction: inserted[0], created: true };
 }
 
 export async function getUnverifiedTransactions(userId: string) {

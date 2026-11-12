@@ -88,11 +88,12 @@ Tool input schemas dynamically build `z.enum()` arrays from the user's actual ca
 - Linking: `/telegram` page → `createTelegramLinkAction` creates a 15-min one-time code → deep link `t.me/<bot>?start=<code>` → bot consumes it (`lib/services/telegram.ts`). One chat per user.
 - Memory: each exchange (user message + `response.messages`, including tool calls/results) is one `telegram_turns` row; the last 10 turns from the past 12h are replayed. Images/PDFs are passed to the model but stored only as a text placeholder.
 - Replies: model Markdown → Telegram HTML (`lib/telegram/format.ts`), chunked under 4096 chars, plain-text fallback on 400.
+- Statements: when a message carries a PDF, `buildFinanceAssistant` gets an `importStatement` callback and exposes an `importStatement` tool. The model decides statement vs. single receipt and picks the account; the bot runs the shared importer in the background, replies right away, then sends a summary (created / duplicates / to review). The PDF placeholder stored in memory keeps the Telegram `file_id` (`(ref:…)`), so the import can still happen on the next message (e.g. after asking which account).
 - Commands: `/start`, `/ayuda`, `/nuevo`, `/desvincular`. Voice notes are not supported yet.
 
 ### Statement Processing (`app/api/upload-statement/route.ts`)
 
-PDF upload flow: upload file → parse with pdf2json → send to Claude Sonnet via `generateObject` → create transactions. Runs as fire-and-forget background processing. Unverified transactions (where AI couldn't classify) are flagged with `isUnverified: true` for user review.
+The parser lives in `lib/services/statementImport.ts` (`startStatementUpload` + `processStatement`) and is shared by the web upload route and the Telegram bot. Flow: PDF → Claude Sonnet via `generateObject` (native PDF input) → `createTransactionIfUnique` (skips date+amount+type duplicates) against the user-chosen account. Runs as background processing. Unverified transactions (where AI couldn't classify) are flagged with `isUnverified: true` for user review.
 
 ## Key Patterns
 
