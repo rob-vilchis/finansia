@@ -1,7 +1,13 @@
 import {
   buildFinanceAssistant,
   FINANCE_ASSISTANT_MODEL,
+  type StatementImportRequest,
 } from "@/lib/ai/financeAssistant";
+import {
+  processStatement,
+  startStatementUpload,
+  type StatementImportResult,
+} from "@/lib/services/statementImport";
 import {
   clearConversation,
   consumeLinkCode,
@@ -35,6 +41,7 @@ CHANNEL: You are replying inside Telegram, usually on a phone, often right after
 - After creating, confirm in one line: what, amount, category, account. E.g. "✅ Gasolina — $800.00 MXN · Transporte · Tarjeta".
 - Several items in one message (e.g. "uber 120, cena 450") → create each one.
 - Deletes still need explicit confirmation: ask, and wait for the user's next message.
+- BANK STATEMENTS (PDF): when the user sends a PDF that is a full bank or credit card statement ("estado de cuenta", many movements over a period), call importStatement instead of createTransaction. Pick the account from the bank name, card name or last digits in the PDF and the user's caption; if more than one account fits and the caption doesn't settle it, ask which one and call importStatement after they answer. statementType is "credit" for credit card statements, "checking" for debit/payroll/checking accounts. After calling it, reply in one line that you're processing it and will report when it's done; don't list or invent the transactions. A PDF of a single receipt, invoice or transfer voucher is NOT a statement: register it with createTransaction.
 - RECEIPTS / SCREENSHOTS: when the user sends an image (ticket, receipt, bank app screenshot, transfer voucher), read the merchant, total and date from it and register it as a transaction following the rules above. If the image has no financial information, say so briefly. If it's unreadable, ask for a clearer photo.
 `;
 
@@ -46,6 +53,7 @@ const HELP_TEXT = `<b>Así puedes usarme</b>
 • <i>"¿Cuánto llevo gastado en restaurantes este mes?"</i>
 • <i>"Borra el último gasto"</i>
 • 📷 Mándame la foto de un ticket o una captura de tu app del banco
+• 📄 Mándame el PDF de tu estado de cuenta y lo importo completo
 
 <b>Comandos</b>
 /nuevo — empezar una conversación nueva
@@ -120,9 +128,95 @@ function getAttachment(message: TelegramMessage) {
     return { fileId: doc.file_id, size: doc.file_size, kind: "image" as const };
   }
   if (doc?.mime_type === "application/pdf") {
-    return { fileId: doc.file_id, size: doc.file_size, kind: "pdf" as const };
+    return {
+      fileId: doc.file_id,
+      size: doc.file_size,
+      kind: "pdf" as const,
+      fileName: doc.file_name,
+    };
   }
   return null;
+}
+
+// PDFs are stored in memory only as a text placeholder. The placeholder keeps
+// Telegram's file_id (stable for bots) so a statement can still be imported on
+// the next message, e.g. after the bot asks which account it belongs to.
+const PDF_REF = /\(ref:([A-Za-z0-9_-]+)\)/;
+
+function pdfPlaceholder(fileId: string, fileName?: string) {
+  return `[El usuario envió un PDF${fileName ? ` "${fileName}"` : ""} (ref:${fileId})]`;
+}
+
+function messageText(message: ModelMessage): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join(" ");
+}
+
+/**
+ * The PDF from the previous exchange, if the user sent one and it hasn't been
+ * imported yet. Only the immediately preceding turn counts.
+ */
+function findPendingPdf(history: ModelMessage[]) {
+  let lastUser = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === "user") {
+      lastUser = i;
+      break;
+    }
+  }
+  if (lastUser === -1) return null;
+  const match = messageText(history[lastUser]).match(PDF_REF);
+  if (!match) return null;
+  const alreadyImported = history
+    .slice(lastUser + 1)
+    .some(
+      (m) =>
+        m.role === "assistant" &&
+        Array.isArray(m.content) &&
+        m.content.some(
+          (part) =>
+            part.type === "tool-call" && part.toolName === "importStatement",
+        ),
+    );
+  return alreadyImported ? null : { fileId: match[1] };
+}
+
+function formatImportSummary(
+  request: StatementImportRequest,
+  result: StatementImportResult,
+): string {
+  const url = appUrl();
+  if (result.status === "error") {
+    return `😕 No pude procesar el estado de cuenta de <b>${escapeHtml(request.accountName)}</b>. Revisa que sea el PDF original del banco o súbelo desde la app.`;
+  }
+  const lines = [
+    result.created > 0
+      ? `✅ Importé <b>${result.created}</b> movimiento${result.created === 1 ? "" : "s"} a <b>${escapeHtml(request.accountName)}</b>.`
+      : `ℹ️ No encontré movimientos nuevos para <b>${escapeHtml(request.accountName)}</b>.`,
+  ];
+  if (result.duplicates > 0) {
+    lines.push(
+      `${result.duplicates} ya estaba${result.duplicates === 1 ? "" : "n"} registrado${result.duplicates === 1 ? "" : "s"}, no los dupliqué.`,
+    );
+  }
+  if (result.failed > 0) {
+    lines.push(`⚠️ ${result.failed} no se pudieron guardar.`);
+  }
+  if (result.needsReview > 0) {
+    lines.push(
+      `🔎 ${result.needsReview} necesita${result.needsReview === 1 ? "" : "n"} que elijas categoría${url ? `: ${url}/data/review` : " en Datos → Revisar."}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function escapeHtml(text: string) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 export async function handleTelegramUpdate(update: TelegramUpdate) {
@@ -229,32 +323,97 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
     return;
   }
 
+  // Started by the importStatement tool; awaited after the reply is sent so
+  // the statement keeps processing while the user reads the confirmation.
+  let pendingImport: Promise<{
+    request: StatementImportRequest;
+    result: StatementImportResult;
+  }> | null = null;
+
+  const reportImport = async () => {
+    if (!pendingImport) return;
+    const running = pendingImport;
+    pendingImport = null;
+    const stopWaiting = keepTyping(chatId);
+    try {
+      const { request, result } = await running;
+      stopWaiting();
+      await sendHtml(chatId, formatImportSummary(request, result));
+    } finally {
+      stopWaiting();
+    }
+  };
+
   const stopTyping = keepTyping(chatId);
   try {
     // What the model sees this turn vs. what we store (no raw bytes in the DB).
     let content: UserContent = text;
     let storedContent: UserContent = text;
 
+    const history = await getConversationHistory(chatKey);
+
+    // A PDF the statement importer can use: this message's, or one from the
+    // previous exchange (downloaded again only if the model asks to import).
+    let statementPdf: { load: () => Promise<Uint8Array>; fileName?: string } | null =
+      null;
+
     if (attachment) {
       const file = await downloadTelegramFile(attachment.fileId);
       const prompt =
         text ||
-        "Registra este ticket/comprobante como transacción.";
+        (attachment.kind === "pdf"
+          ? "Te mando este PDF (puede ser un estado de cuenta o un comprobante)."
+          : "Registra este ticket/comprobante como transacción.");
       content = [
         attachment.kind === "pdf"
           ? { type: "file", data: file.data, mediaType: "application/pdf" }
           : { type: "image", image: file.data, mediaType: file.mediaType },
         { type: "text", text: prompt },
       ];
-      storedContent = `[El usuario envió ${attachment.kind === "pdf" ? "un PDF" : "una imagen"}] ${prompt}`;
+      if (attachment.kind === "pdf") {
+        storedContent = `${pdfPlaceholder(attachment.fileId, attachment.fileName)} ${prompt}`;
+        statementPdf = {
+          load: async () => file.data,
+          fileName: attachment.fileName,
+        };
+      } else {
+        storedContent = `[El usuario envió una imagen] ${prompt}`;
+      }
+    } else {
+      const pending = findPendingPdf(history);
+      if (pending) {
+        statementPdf = {
+          load: async () => (await downloadTelegramFile(pending.fileId)).data,
+        };
+      }
     }
 
-    const [{ system, tools }, history] = await Promise.all([
-      buildFinanceAssistant(link.userId, {
-        extraInstructions: TELEGRAM_INSTRUCTIONS,
-      }),
-      getConversationHistory(chatKey),
-    ]);
+    const importStatement = statementPdf
+      ? async (request: StatementImportRequest) => {
+          if (pendingImport) {
+            return { error: "This statement is already being imported." };
+          }
+          const pdf = await statementPdf.load();
+          const statement = await startStatementUpload(
+            link.userId,
+            statementPdf.fileName ?? `telegram-${message.message_id}.pdf`,
+          );
+          pendingImport = processStatement(statement.id, {
+            userId: link.userId,
+            pdf,
+            accountId: request.accountId,
+            accountName: request.accountName,
+            accountType: request.accountType,
+            comments: request.comments,
+          }).then((result) => ({ request, result }));
+          return { status: "started" as const };
+        }
+      : undefined;
+
+    const { system, tools } = await buildFinanceAssistant(link.userId, {
+      extraInstructions: TELEGRAM_INSTRUCTIONS,
+      importStatement,
+    });
 
     const result = await generateText({
       model: FINANCE_ASSISTANT_MODEL,
@@ -278,6 +437,8 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
       ...result.response.messages,
     ];
     await saveConversationTurn(chatKey, link.userId, turn);
+
+    await reportImport();
   } catch (error) {
     stopTyping();
     console.error("Telegram bot error:", error);
@@ -285,6 +446,10 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
       chatId,
       "😕 Algo salió mal procesando tu mensaje. Intenta de nuevo en un momento.",
     ).catch(() => {});
+    // An import may already be running; still let the user know how it went.
+    await reportImport().catch((e) =>
+      console.error("Telegram statement report failed:", e),
+    );
   } finally {
     stopTyping();
   }

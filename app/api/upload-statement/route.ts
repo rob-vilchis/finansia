@@ -1,201 +1,63 @@
 export const runtime = "nodejs";
 export const maxDuration = 300;
-import { fetchUserCategories } from "@/lib/financial-data";
+import { db } from "@/lib/db";
+import { accounts } from "@/lib/db/schema/account";
 import {
-  createStatementUpload,
-  updateStatementUploadStatus,
-} from "@/lib/services/statements";
-import { createTransactionIfUnique } from "@/lib/services/transactions";
-import { waitUntil } from "@vercel/functions";
+  processStatement,
+  startStatementUpload,
+} from "@/lib/services/statementImport";
 import { currentUser } from "@clerk/nextjs/server";
-import { generateObject } from "ai";
-import { promises as fs } from "fs";
-import { revalidatePath } from "next/cache";
+import { waitUntil } from "@vercel/functions";
+import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
-import z from "zod";
-
-const createPrompt = (
-  accountType: string | null,
-  accountId: string | null,
-  comments: string | null
-) => `You are a financial data parser. Your job is to read the attached bank statement PDF and extract all transactions into the provided format.
-
-GUIDELINES:
-- Statements can be either credit card statements or checking account statements.
-- When it is a credit statement, consider only the expenses. DO NOT GENERATE CREDIT CARD PAYMENT TRANSACTIONS, IGNORE THEM.
-- When it is a checking statement, classify all transactions into income/expense.
-- The name of the account is provided by the user. Pass it into the accountName field for expenses, and into the targetAccountName for income.
-- For each transaction, generate a short description in spanish, based on the available information.
-- If there is no time value, set it to 12:00 PM by default.
-- If you can't accurately classify the transaction with the available information, leave the category as null and set needsVerification to true, for the user to classify later
-
-${comments ? "ADDITIONAL INSTRUCTIONS PROVIDED BY USER: " + comments : ""}
-
-STATEMENT TYPE: ${accountType}
-ACCOUNT NAME: ${accountId}
-The statement is attached as a PDF file.
-`;
-
-async function processStatement(
-  statementId: string,
-  tempFilePath: string,
-  userId: string,
-  userCategories: {
-    id: string;
-    name: string;
-    type: string;
-  }[],
-  accountType: string,
-  accountId: string,
-  comments: string
-) {
-  try {
-    console.log(`Starting background processing for statement ${statementId}`);
-
-    // Read the PDF and send it directly to Claude, which parses PDFs natively
-    // (including image-based and Type3/custom-glyph fonts that break pdf2json).
-    const pdfBuffer = await fs.readFile(tempFilePath);
-    const prompt = createPrompt(accountType, accountId, comments);
-
-    const response = await generateObject({
-      model: "anthropic/claude-sonnet-4.5",
-      output: "array",
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            {
-              type: "file",
-              data: pdfBuffer,
-              mediaType: "application/pdf",
-            },
-          ],
-        },
-      ],
-      schema: z.object({
-        description: z.string().describe("Description of the transaction"),
-        date: z.string().date().describe("Date of the transaction"),
-        time: z.string().time().describe("Time of the transaction"),
-        amount: z.number().describe("Amount of the transaction"),
-        categoryName: z
-          .enum(
-            (userCategories.length > 0
-              ? userCategories.map((category) => category.name)
-              : [""]) as [string, ...string[]]
-          )
-          .nullable()
-          .describe(
-            "Category of the transaction. Must match the selected type (expense categories for expense, income categories for income). Leave as null if the transaction cannot be accurately classified."
-          ),
-        type: z
-          .enum(["expense", "income", "transfer"])
-          .describe("Type of the transaction"),
-        sourceAccountId: z
-          .string()
-          .describe(
-            "User-provided acccount for expenses. Leave empty if it is income."
-          ),
-        targetAccountId: z
-          .string()
-          .describe(
-            "User-provided account for income. Leave empty if it is an expense."
-          ),
-        needsVerification: z
-          .boolean()
-          .describe("Set to true if user verification is needed"),
-      }),
-    });
-
-    console.log(`Generated ${response.object.length} transactions from AI`);
-
-    const results = await Promise.allSettled(
-      response.object.map((transaction) =>
-        createTransactionIfUnique({
-          userId: userId,
-          ...transaction,
-        })
-      )
-    );
-
-    const successful = results.filter((r) => r.status === "fulfilled");
-    const failed = results.filter((r) => r.status === "rejected");
-
-    if (failed.length > 0) {
-      console.error(
-        `Statement ${statementId}: ${failed.length} transactions failed:`,
-        failed.map((f) => (f as PromiseRejectedResult).reason)
-      );
-    }
-
-    if (successful.length === 0) {
-      await updateStatementUploadStatus(statementId, "error");
-      console.error(
-        `Statement ${statementId}: All ${failed.length} transactions failed, marking as error`
-      );
-    } else {
-      await updateStatementUploadStatus(statementId, "ready");
-      revalidatePath("/data");
-      revalidatePath("/home");
-      console.log(
-        `Statement ${statementId}: ${successful.length}/${results.length} transactions created successfully`
-      );
-    }
-  } catch (error) {
-    console.error(
-      `Background processing failed for statement ${statementId}`,
-      error
-    );
-    await updateStatementUploadStatus(statementId, "error");
-  }
-}
 
 export async function POST(request: Request) {
-  let fileName = "";
   const user = await currentUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
 
   try {
     const formData = await request.formData();
-    const file = formData.get("file") as File;
+    const file = formData.get("file") as File | null;
     const accountType = formData.get("accountType") as string;
     const accountId = formData.get("accountId") as string;
-    const comments = formData.get("comments") as string;
+    const comments = formData.get("comments") as string | null;
 
     if (!file) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
     }
-    fileName = uuidv4();
+    if (accountType !== "checking" && accountType !== "credit") {
+      return NextResponse.json(
+        { error: "Tipo de estado de cuenta inválido" },
+        { status: 400 },
+      );
+    }
 
-    const tempFilePath = `/tmp/${fileName}.pdf`;
-    console.log("Saving file: ", tempFilePath);
+    const [account] = await db
+      .select({ id: accounts.id, name: accounts.name })
+      .from(accounts)
+      .where(and(eq(accounts.id, accountId), eq(accounts.userId, user.id)))
+      .limit(1);
+    if (!account) {
+      return NextResponse.json(
+        { error: "Cuenta no encontrada" },
+        { status: 400 },
+      );
+    }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    await fs.writeFile(tempFilePath, buffer);
-
-    const userCategories = await fetchUserCategories(user.id);
-
-    // Create DB record immediately
-    const statement = await createStatementUpload({
-      userId: user.id,
-      originalFileName: fileName,
-      extractedText: "", // Initial empty text
-      status: "processing",
-    });
+    const pdf = new Uint8Array(await file.arrayBuffer());
+    const statement = await startStatementUpload(user.id, uuidv4());
 
     // Keep serverless function alive until processing completes
     waitUntil(
-      processStatement(
-        statement.id,
-        tempFilePath,
-        user.id,
-        userCategories,
+      processStatement(statement.id, {
+        userId: user.id,
+        pdf,
+        accountId: account.id,
+        accountName: account.name,
         accountType,
-        accountId,
-        comments
-      )
+        comments,
+      }),
     );
 
     return NextResponse.json(
@@ -204,9 +66,10 @@ export async function POST(request: Request) {
         statementId: statement.id,
         message: "File processing started in background",
       },
-      { status: 202 }
+      { status: 202 },
     );
   } catch (err) {
-    return NextResponse.json({ error: err }, { status: 500 });
+    console.error("Statement upload failed", err);
+    return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }

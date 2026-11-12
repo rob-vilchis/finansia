@@ -20,7 +20,7 @@ import {
   deleteTransactions,
   getTransactions,
 } from "@/lib/services/transactions";
-import { tool } from "ai";
+import { tool, type ToolSet } from "ai";
 import { and, eq } from "drizzle-orm";
 import z from "zod";
 
@@ -36,9 +36,28 @@ const MX_TIMEZONE = "America/Mexico_City";
  * `extraInstructions` is appended to the system prompt (e.g. channel-specific
  * formatting rules).
  */
+export type StatementImportRequest = {
+  accountId: string;
+  accountName: string;
+  accountType: "checking" | "credit";
+  comments?: string;
+};
+
+export type FinanceAssistantOptions = {
+  extraInstructions?: string;
+  /**
+   * Set when the current message carries a PDF the channel can import as a
+   * bank statement. Enables the `importStatement` tool, which calls this to
+   * start the (background) import.
+   */
+  importStatement?: (
+    request: StatementImportRequest,
+  ) => Promise<{ status: "started" } | { error: string }>;
+};
+
 export async function buildFinanceAssistant(
   userId: string,
-  { extraInstructions }: { extraInstructions?: string } = {},
+  { extraInstructions, importStatement }: FinanceAssistantOptions = {},
 ) {
   const { transactions, goals, accounts, categorySum } =
     await fetchAllFinancialData(userId);
@@ -69,7 +88,7 @@ export async function buildFinanceAssistant(
   - Analyze spending patterns, goal progress, and account balances
 
   LIMITATIONS — do NOT promise or suggest you can:
-  - Connect to banks or import statements (the user uploads PDFs separately)
+  - Connect to banks${importStatement ? "" : " or import statements (the user uploads PDFs separately)"}
   - Make actual transfers or paymentsp
   - Access data beyond what is provided below
 
@@ -1123,10 +1142,51 @@ export async function buildFinanceAssistant(
       }),
   };
 
+  const accountNames = (
+    userAccounts.length > 0 ? userAccounts.map((account) => account.name) : [""]
+  ) as [string, ...string[]];
+
+  const statementTools: ToolSet = importStatement
+    ? {
+        importStatement: tool({
+          description:
+            "Import the bank statement PDF attached to the user's current message: parses every transaction in it and adds them to the chosen account in the background. Use ONLY for full account/card statements (estado de cuenta), never for a single receipt or transfer voucher. Call at most once per PDF.",
+          inputSchema: z.object({
+            accountName: z
+              .enum(accountNames)
+              .describe(
+                "The user's account this statement belongs to (match bank name, card name or last digits).",
+              ),
+            statementType: z
+              .enum(["credit", "checking"])
+              .describe(
+                "credit = credit card statement; checking = debit/checking account statement.",
+              ),
+            comments: z
+              .string()
+              .optional()
+              .describe(
+                "Extra parsing instructions the user gave about this statement, if any.",
+              ),
+          }),
+          execute: async ({ accountName, statementType, comments }) => {
+            const account = userAccounts.find((a) => a.name === accountName);
+            if (!account) return { error: `Unknown account: ${accountName}` };
+            return importStatement({
+              accountId: account.id,
+              accountName: account.name,
+              accountType: statementType,
+              comments,
+            });
+          },
+        }),
+      }
+    : {};
+
   return {
     system: extraInstructions
       ? `${systemContext}\n\n${extraInstructions}`
       : systemContext,
-    tools,
+    tools: { ...tools, ...statementTools },
   };
 }
